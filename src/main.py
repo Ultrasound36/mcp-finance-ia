@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-MCP Server para consultas financieras y divisas con IA Grok
-Elimina el sentimiento y proporciona análisis objetivo basado en datos.
+MCP Server para consultas financieras y divisas con OpenAI
+Proporciona análisis objetivo y recomendaciones de trading basadas en datos cuantitativos.
 """
 
 import asyncio
@@ -10,7 +10,7 @@ import os
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 
-import httpx
+import openai
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -22,8 +22,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuración
-GROK_API_KEY = os.getenv("GROK_API_KEY")
-GROK_BASE_URL = "https://api.x.ai/v1"
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 
 # Inicializar FastMCP
 app = FastMCP("MCP Finance IA")
@@ -40,73 +40,147 @@ class CurrencyQuery(BaseModel):
     target_currency: str = Field(..., description="Moneda objetivo (ej: CLP, MXN)")
     amount: Optional[float] = Field(1.0, description="Cantidad a convertir")
 
-class GrokClient:
-    """Cliente para interactuar con la API de Grok"""
+class FinancialAnalyst:
+    """Cliente para análisis financiero con OpenAI"""
 
     def __init__(self):
-        self.api_key = GROK_API_KEY
-        self.base_url = GROK_BASE_URL
-        self.client = httpx.AsyncClient(
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            },
-            timeout=30.0
-        )
+        self.api_key = OPENAI_API_KEY
 
     async def analyze_financial_data(self, data: Dict[str, Any], query: str) -> str:
-        """Analiza datos financieros con Grok eliminando sesgos emocionales"""
+        """Analiza datos financieros usando OpenAI para recomendaciones de trading"""
 
-        # Preparar el prompt para análisis objetivo
+        signals = self._calculate_trading_signals(data)
+        
+        # Preparar el prompt para análisis y recomendaciones
         prompt = f"""
-        Analiza los siguientes datos financieros de manera OBJETIVA y CUANTITATIVA.
-        ELIMINA cualquier sesgo emocional, sentimiento o especulación.
-        Proporciona solo hechos basados en datos matemáticos y estadísticos.
+        Analiza los siguientes datos financieros y proporciona recomendaciones de trading OBJETIVAS.
+        Base tu análisis ÚNICAMENTE en datos cuantitativos y señales técnicas.
 
         DATOS FINANCIEROS:
         {json.dumps(data, indent=2, default=str)}
+
+        SEÑALES TÉCNICAS:
+        {json.dumps(signals, indent=2)}
 
         CONSULTA DEL USUARIO:
         {query}
 
         INSTRUCCIONES:
-        1. Analiza únicamente datos cuantitativos
-        2. Evita cualquier mención a "sentimiento del mercado"
-        3. Proporciona métricas objetivas: rendimientos, volatilidad, ratios
-        4. Si no hay datos suficientes, indica claramente las limitaciones
-        5. Mantén el análisis neutral y basado en evidencia
+        1. Analiza patrones técnicos y tendencias
+        2. Identifica niveles clave de soporte/resistencia
+        3. Calcula y evalúa indicadores técnicos
+        4. Proporciona recomendación clara: COMPRAR/VENDER/MANTENER
+        5. Establece objetivos de precio y stop loss
+        6. Justifica cada recomendación con datos
+        7. Evalúa el riesgo/recompensa cuantitativamente
 
-        ANÁLISIS OBJETIVO:
+        ANÁLISIS Y RECOMENDACIONES:
         """
 
         try:
-            response = await self.client.post(
-                f"{self.base_url}/chat/completions",
-                json={
-                    "model": "grok-beta",
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "Eres un analista financiero objetivo que solo proporciona análisis basado en datos cuantitativos. Eliminas cualquier sesgo emocional o especulación."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    "temperature": 0.1,  # Baja temperatura para mayor objetividad
-                    "max_tokens": 1000
-                }
+            from openai import AsyncOpenAI
+            
+            client = AsyncOpenAI(api_key=self.api_key)
+            response = await client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """Eres un analista técnico experto que proporciona recomendaciones 
+                        de trading basadas exclusivamente en análisis cuantitativo y señales técnicas. 
+                        Tus recomendaciones son precisas y respaldadas por datos."""
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.2,
+                max_tokens=2000
             )
-
-            if response.status_code == 200:
-                result = response.json()
-                return result["choices"][0]["message"]["content"]
-            else:
-                return f"Error en la consulta a Grok: {response.status_code} - {response.text}"
+            return response.choices[0].message.content
 
         except Exception as e:
-            return f"Error de conexión con Grok: {str(e)}"
+            return f"Error en el análisis: {str(e)}"
+
+    def _calculate_trading_signals(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Calcula señales técnicas de trading"""
+        signals = {
+            "tendencia": self._detect_trend(data),
+            "soportes_resistencias": self._find_support_resistance(data),
+            "momentum": self._calculate_momentum(data),
+            "volatilidad": self._analyze_volatility(data),
+            "recomendacion": self._generate_recommendation(data)
+        }
+        return signals
+
+    def _detect_trend(self, data: Dict[str, Any]) -> str:
+        """Detecta la tendencia del activo"""
+        if "current_price" not in data or "high_52w" not in data or "low_52w" not in data:
+            return "INDEFINIDA"
+        
+        price = data["current_price"]
+        high = data["high_52w"]
+        low = data["low_52w"]
+        
+        range_52w = high - low
+        position = (price - low) / range_52w if range_52w > 0 else 0
+        
+        if position > 0.7:
+            return "ALCISTA_FUERTE"
+        elif position > 0.5:
+            return "ALCISTA"
+        elif position < 0.3:
+            return "BAJISTA_FUERTE"
+        elif position < 0.5:
+            return "BAJISTA"
+        return "LATERAL"
+
+    def _find_support_resistance(self, data: Dict[str, Any]) -> Dict[str, float]:
+        """Identifica niveles de soporte y resistencia"""
+        current_price = data.get("current_price", 0)
+        high_52w = data.get("high_52w", current_price)
+        low_52w = data.get("low_52w", current_price)
+        
+        return {
+            "soporte_1": round(low_52w + (high_52w - low_52w) * 0.236, 2),
+            "soporte_2": round(low_52w + (high_52w - low_52w) * 0.382, 2),
+            "resistencia_1": round(low_52w + (high_52w - low_52w) * 0.618, 2),
+            "resistencia_2": round(low_52w + (high_52w - low_52w) * 0.786, 2)
+        }
+
+    def _calculate_momentum(self, data: Dict[str, Any]) -> Dict[str, float]:
+        """Calcula indicadores de momentum"""
+        return {
+            "rsi": min(100, max(0, 50 + data.get("daily_return_pct", 0) * 2)),
+            "fuerza_tendencia": abs(data.get("daily_return_pct", 0)) / (data.get("volatility_pct", 1) + 0.1)
+        }
+
+    def _analyze_volatility(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Analiza la volatilidad del activo"""
+        volatility = data.get("volatility_pct", 0)
+        return {
+            "volatilidad_anual": volatility,
+            "riesgo": "ALTO" if volatility > 30 else "MEDIO" if volatility > 15 else "BAJO",
+            "stop_loss_sugerido": round(data.get("current_price", 0) * (1 - volatility/100), 2)
+        }
+
+    def _generate_recommendation(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Genera recomendación de trading basada en señales técnicas"""
+        trend = self._detect_trend(data)
+        momentum = self._calculate_momentum(data)
+        volatility = self._analyze_volatility(data)
+        
+        score = 0
+        score += 2 if trend in ["ALCISTA_FUERTE"] else 1 if trend == "ALCISTA" else -2 if trend == "BAJISTA_FUERTE" else -1 if trend == "BAJISTA" else 0
+        score += 1 if momentum["rsi"] > 60 else -1 if momentum["rsi"] < 40 else 0
+        score += 1 if momentum["fuerza_tendencia"] > 0.5 else -1 if momentum["fuerza_tendencia"] < -0.5 else 0
+        
+        return {
+            "accion": "COMPRAR" if score >= 2 else "VENDER" if score <= -2 else "MANTENER",
+            "confianza": abs(score) / 4 * 100,  # Porcentaje de confianza
+            "stop_loss": volatility["stop_loss_sugerido"]
+        }
 
 class FinancialDataProvider:
     """Proveedor de datos financieros"""
@@ -173,7 +247,7 @@ class FinancialDataProvider:
             return {"error": f"Error obteniendo datos de divisa {base}/{target}: {str(e)}"}
 
 # Instancias globales
-grok_client = GrokClient()
+analyst = FinancialAnalyst()
 financial_provider = FinancialDataProvider()
 
 # Funciones MCP
@@ -196,17 +270,17 @@ Mínimo 52 semanas: ${data['low_52w']}
 
 @app.tool()
 async def analyze_stock(symbol: str, timeframe: str = "3mo") -> str:
-    """Analiza una acción con datos objetivos y consulta a Grok"""
+    """Analiza una acción con datos objetivos y proporciona recomendaciones de trading"""
     data = financial_provider.get_stock_data(symbol, timeframe)
 
     if "error" in data:
         return f"Error: {data['error']}"
 
-    query = f"Analiza objetivamente los datos financieros de {symbol} en el período {timeframe}"
-    grok_analysis = await grok_client.analyze_financial_data(data, query)
+    query = f"Analiza los datos financieros de {symbol} y proporciona recomendaciones de trading para el período {timeframe}"
+    analysis = await analyst.analyze_financial_data(data, query)
 
     return f"""
-ANÁLISIS OBJETIVO DE {symbol.upper()} ({timeframe})
+ANÁLISIS TÉCNICO DE {symbol.upper()} ({timeframe})
 
 DATOS CUANTITATIVOS:
 - Precio actual: ${data['current_price']}
@@ -215,8 +289,8 @@ DATOS CUANTITATIVOS:
 - Máximo 52S: ${data['high_52w']}
 - Mínimo 52S: ${data['low_52w']}
 
-ANÁLISIS DE GROK:
-{grok_analysis}
+ANÁLISIS Y RECOMENDACIONES:
+{analysis}
 """
 
 @app.tool()
@@ -259,8 +333,8 @@ async def compare_stocks(symbols: List[str], timeframe: str = "3mo") -> str:
         "volatilities": [r["volatility"] for r in results]
     }
 
-    query = f"Compara objetivamente estas acciones: {', '.join([r['symbol'] for r in results])}"
-    grok_analysis = await grok_client.analyze_financial_data(comparison_data, query)
+    query = f"Compara estas acciones y proporciona recomendaciones de trading: {', '.join([r['symbol'] for r in results])}"
+    analysis = await analyst.analyze_financial_data(comparison_data, query)
 
     table = "\n".join([
         f"{r['symbol']:<10} ${r['price']:<10.2f} {r['daily_return']:<8.2f}% {r['volatility']:<8.2f}%"
@@ -274,8 +348,8 @@ COMPARACIÓN OBJETIVA DE ACCIONES ({timeframe})
 {'-'*50}
 {table}
 
-ANÁLISIS DE GROK:
-{grok_analysis}
+ANÁLISIS Y RECOMENDACIONES:
+{analysis}
 """
 
 @app.tool()
@@ -310,9 +384,9 @@ async def get_market_overview() -> str:
         "currencies": currency_data
     }
 
-    grok_analysis = await grok_client.analyze_financial_data(
+    analysis = await analyst.analyze_financial_data(
         overview_data,
-        "Proporciona un análisis objetivo del estado actual del mercado basado únicamente en datos cuantitativos"
+        "Analiza el estado actual del mercado y proporciona recomendaciones de trading para índices y divisas"
     )
 
     return f"""
@@ -324,19 +398,19 @@ VISIÓN GENERAL OBJETIVA DEL MERCADO
 DIVISAS MAYORES:
 {"".join([f"{curr['pair']}: {curr['rate']:.4f}\n" for curr in currency_data])}
 
-ANÁLISIS DE GROK:
-{grok_analysis}
+ANÁLISIS Y RECOMENDACIONES:
+{analysis}
 """
 
 def main():
     """Función principal para ejecutar el servidor MCP"""
-    if not GROK_API_KEY:
-        print("Error: GROK_API_KEY no está configurada en las variables de entorno")
-        print("Crea un archivo .env con: GROK_API_KEY=tu_api_key_aqui")
+    if not OPENAI_API_KEY:
+        print("Error: OPENAI_API_KEY no está configurada en las variables de entorno")
+        print("Crea un archivo .env con: OPENAI_API_KEY=tu_api_key_aqui")
         return
 
     print("🚀 Iniciando MCP Finance IA Server...")
-    print("📊 Servidor listo para consultas financieras objetivas con Grok")
+    print("📊 Servidor listo para consultas financieras y recomendaciones de trading")
 
     # Ejecutar el servidor FastMCP
     app.run()
