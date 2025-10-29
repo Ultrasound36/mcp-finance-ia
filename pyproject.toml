@@ -1,7 +1,7 @@
 [project]
 name = "mcp-finance-ia"
 version = "0.1.0"
-description = "MCP Server para consultas financieras y divisas con IA Grok"
+description = "MCP Server para consultas financieras y análisis de trading con OpenAI"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -9,9 +9,8 @@ dependencies = [
     "httpx>=0.25.0",
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
-    "yfinance>=0.2.40",
+    "yfinance>=0.2.66",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
-    "requests>=2.31.0",
-    "openai>=1.0.0"
+    "openai>=2.6.1"
 ]
