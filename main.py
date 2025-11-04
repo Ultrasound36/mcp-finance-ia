@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 MCP Server para consultas financieras y divisas con OpenAI
 Proporciona análisis objetivo y recomendaciones de trading basadas en datos cuantitativos.
@@ -10,6 +9,10 @@ from typing import Dict, List, Optional, Any
 
 import yfinance as yf
 import numpy as np
+import openai
+import pandas as pd
+import yfinance as yf
+from dotenv import load_dotenv
 from fastmcp import FastMCP
 from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
@@ -140,6 +143,7 @@ def _calculate_trading_signals(data: Dict[str, Any]) -> Dict[str, Any]:
     return signals
 
 
+
 class FinancialAnalyst:
     """Cliente para análisis financiero con OpenAI"""
 
@@ -190,9 +194,11 @@ class FinancialAnalyst:
                     ChatCompletionUserMessageParam(role="user", content=prompt)
                 ],
                 temperature=0.2,
-                max_tokens=2000
+                max_tokens=2000,
             )
-            return response.choices[0].message.content
+            return response.choices[
+                0
+            ].message.content  # pyright: ignore[reportReturnType]
 
         except Exception as e:
             return f"Error en el análisis: {str(e)}"
@@ -212,14 +218,14 @@ class FinancialDataProvider:
                 return {"error": f"No se encontraron datos para {symbol}"}
 
             # Calcular métricas objetivas
-            current_price = hist['Close'].iloc[-1]
-            previous_price = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
+            current_price = hist["Close"].iloc[-1]
+            previous_price = hist["Close"].iloc[-2] if len(hist) > 1 else current_price
 
             # Rendimiento
             daily_return = (current_price - previous_price) / previous_price * 100
 
             # Volatilidad (desviación estándar de retornos)
-            returns = hist['Close'].pct_change().dropna()
+            returns = hist["Close"].pct_change().dropna()
             volatility = returns.std() * np.sqrt(252) * 100  # Anualizada
 
             # Estadísticas básicas
@@ -227,10 +233,10 @@ class FinancialDataProvider:
                 "current_price": round(current_price, 2),
                 "daily_return_pct": round(daily_return, 2),
                 "volatility_pct": round(volatility, 2),
-                "volume_avg": int(hist['Volume'].mean()),
-                "high_52w": round(hist['High'].max(), 2),
-                "low_52w": round(hist['Low'].min(), 2),
-                "data_points": len(hist)
+                "volume_avg": int(hist["Volume"].mean()),
+                "high_52w": round(hist["High"].max(), 2),
+                "low_52w": round(hist["Low"].min(), 2),
+                "data_points": len(hist),
             }
 
             return stats
@@ -239,7 +245,9 @@ class FinancialDataProvider:
             return {"error": f"Error obteniendo datos de {symbol}: {str(e)}"}
 
     @staticmethod
-    def get_currency_data(base: str, target: str, amount: float = 1.0) -> Dict[str, Any]:
+    def get_currency_data(
+        base: str, target: str, amount: float = 1.0
+    ) -> Dict[str, Any]:
         """Obtiene datos de conversión de divisas"""
         try:
             symbol = f"{base}{target}=X"
@@ -249,22 +257,26 @@ class FinancialDataProvider:
             if data.empty:
                 return {"error": f"No se encontraron datos para {base}/{target}"}
 
-            rate = data['Close'].iloc[-1]
+            rate = data["Close"].iloc[-1]
 
             return {
                 "base_currency": base,
                 "target_currency": target,
                 "exchange_rate": round(rate, 4),
                 "converted_amount": round(amount * rate, 2),
-                "timestamp": data.index[-1].strftime("%Y-%m-%d %H:%M:%S")
+                "timestamp": data.index[-1].strftime("%Y-%m-%d %H:%M:%S"),
             }
 
         except Exception as e:
-            return {"error": f"Error obteniendo datos de divisa {base}/{target}: {str(e)}"}
+            return {
+                "error": f"Error obteniendo datos de divisa {base}/{target}: {str(e)}"
+            }
+
 
 # Instancias globales
 analyst = FinancialAnalyst()
 financial_provider = FinancialDataProvider()
+
 
 # Funciones MCP
 @app.tool()
@@ -283,6 +295,7 @@ Volumen promedio: {data['volume_avg']:,}
 Máximo 52 semanas: ${data['high_52w']}
 Mínimo 52 semanas: ${data['low_52w']}
 """
+
 
 @app.tool()
 async def analyze_stock(symbol: str, timeframe: str = "3mo") -> str:
@@ -309,6 +322,7 @@ ANÁLISIS Y RECOMENDACIONES:
 {analysis}
 """
 
+
 @app.tool()
 async def convert_currency(base: str, target: str, amount: float = 1.0) -> str:
     """Convierte entre divisas usando datos objetivos"""
@@ -324,6 +338,7 @@ Tipo de cambio: 1 {data['base_currency']} = {data['exchange_rate']} {data['targe
 Última actualización: {data['timestamp']}
 """
 
+
 @app.tool()
 async def compare_stocks(symbols: List[str], timeframe: str = "3mo") -> str:
     """Compara múltiples acciones de manera objetiva"""
@@ -331,12 +346,14 @@ async def compare_stocks(symbols: List[str], timeframe: str = "3mo") -> str:
     for symbol in symbols:
         data = financial_provider.get_stock_data(symbol, timeframe)
         if "error" not in data:
-            results.append({
-                "symbol": symbol.upper(),
-                "price": data['current_price'],
-                "daily_return": data['daily_return_pct'],
-                "volatility": data['volatility_pct']
-            })
+            results.append(
+                {
+                    "symbol": symbol.upper(),
+                    "price": data["current_price"],
+                    "daily_return": data["daily_return_pct"],
+                    "volatility": data["volatility_pct"],
+                }
+            )
 
     if not results:
         return "Error: No se pudieron obtener datos para ninguna de las acciones especificadas"
@@ -346,16 +363,18 @@ async def compare_stocks(symbols: List[str], timeframe: str = "3mo") -> str:
         "symbols": [r["symbol"] for r in results],
         "prices": [r["price"] for r in results],
         "daily_returns": [r["daily_return"] for r in results],
-        "volatilities": [r["volatility"] for r in results]
+        "volatilities": [r["volatility"] for r in results],
     }
 
     query = f"Compara estas acciones y proporciona recomendaciones de trading: {', '.join([r['symbol'] for r in results])}"
     analysis = await analyst.analyze_financial_data(comparison_data, query)
 
-    table = "\n".join([
-        f"{r['symbol']:<10} ${r['price']:<10.2f} {r['daily_return']:<8.2f}% {r['volatility']:<8.2f}%"
-        for r in results
-    ])
+    table = "\n".join(
+        [
+            f"{r['symbol']:<10} ${r['price']:<10.2f} {r['daily_return']:<8.2f}% {r['volatility']:<8.2f}%"
+            for r in results
+        ]
+    )
 
     return f"""
 COMPARACIÓN OBJETIVA DE ACCIONES ({timeframe})
@@ -367,6 +386,7 @@ COMPARACIÓN OBJETIVA DE ACCIONES ({timeframe})
 ANÁLISIS Y RECOMENDACIONES:
 {analysis}
 """
+
 
 @app.tool()
 async def get_market_overview() -> str:
@@ -380,29 +400,27 @@ async def get_market_overview() -> str:
     for symbol in major_indices:
         data = financial_provider.get_stock_data(symbol, "1d")
         if "error" not in data:
-            index_data.append({
-                "symbol": symbol.replace("^", ""),
-                "price": data['current_price'],
-                "daily_return": data['daily_return_pct']
-            })
+            index_data.append(
+                {
+                    "symbol": symbol.replace("^", ""),
+                    "price": data["current_price"],
+                    "daily_return": data["daily_return_pct"],
+                }
+            )
 
     for symbol in currencies:
         base, target = symbol.split("=")[0][:3], symbol.split("=")[0][3:]
         data = financial_provider.get_currency_data(base, target)
         if "error" not in data:
-            currency_data.append({
-                "pair": f"{base}/{target}",
-                "rate": data['exchange_rate']
-            })
+            currency_data.append(
+                {"pair": f"{base}/{target}", "rate": data["exchange_rate"]}
+            )
 
-    overview_data = {
-        "indices": index_data,
-        "currencies": currency_data
-    }
+    overview_data = {"indices": index_data, "currencies": currency_data}
 
     analysis = await analyst.analyze_financial_data(
         overview_data,
-        "Analiza el estado actual del mercado y proporciona recomendaciones de trading para índices y divisas"
+        "Analiza el estado actual del mercado y proporciona recomendaciones de trading para índices y divisas",
     )
 
     return f"""
@@ -418,6 +436,7 @@ ANÁLISIS Y RECOMENDACIONES:
 {analysis}
 """
 
+
 def main():
     """Función principal para ejecutar el servidor MCP"""
     if not OPENAI_API_KEY:
@@ -430,6 +449,7 @@ def main():
 
     # Ejecutar el servidor FastMCP
     app.run()
+
 
 if __name__ == "__main__":
     main()
