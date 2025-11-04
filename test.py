@@ -91,7 +91,7 @@ async def test_trading_signals():
 
         # Probar generación de señales técnicas
         print("\n📊 Generando señales técnicas...")
-        signals = analyst._calculate_trading_signals(test_data)
+        signals = _calculate_trading_signals(test_data)
         
         print("✅ Señales técnicas generadas:")
         print(f"   Tendencia: {signals['tendencia']}")

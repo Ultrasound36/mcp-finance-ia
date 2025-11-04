@@ -4,19 +4,17 @@ MCP Server para consultas financieras y divisas con OpenAI
 Proporciona análisis objetivo y recomendaciones de trading basadas en datos cuantitativos.
 """
 
-import asyncio
 import json
 import os
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
 
-import openai
 import yfinance as yf
-import pandas as pd
 import numpy as np
 from fastmcp import FastMCP
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
+from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
+from typing import Literal
 
 # Cargar variables de entorno
 load_dotenv()
@@ -28,17 +26,119 @@ ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 # Inicializar FastMCP
 app = FastMCP("MCP Finance IA")
 
+
 class FinancialQuery(BaseModel):
     """Modelo para consultas financieras"""
-    symbol: str = Field(..., description="Símbolo del activo (ej: AAPL, EURUSD=X)")
-    query_type: str = Field(..., description="Tipo de consulta: price, analysis, forecast, comparison")
-    timeframe: Optional[str] = Field("1mo", description="Periodo de tiempo: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max")
+    symbol: str = Field(..., description="Símbolo del activo (ej:  AAPL, EURUSD=X)")
+    query_type: Literal["price", "analysis", "forecast", "comparison"] = Field(..., description="Tipo de consulta")
+    timeframe: Optional[Literal["1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max"]] = Field("1mo", description="Periodo de tiempo")
 
 class CurrencyQuery(BaseModel):
     """Modelo para consultas de divisas"""
-    base_currency: str = Field(..., description="Moneda base (ej: USD, EUR)")
-    target_currency: str = Field(..., description="Moneda objetivo (ej: CLP, MXN)")
-    amount: Optional[float] = Field(1.0, description="Cantidad a convertir")
+    base_currency: str = Field(..., description="Código de moneda base (3 letras, ej: USD, EUR)")
+    target_currency: str = Field(..., description="Código de moneda objetivo (3 letras, ej: CLP, MXN)")
+    amount: Optional[float] = Field(1.0, description="Cantidad a convertir (debe ser positiva)")
+
+    @field_validator('base_currency', 'target_currency')
+    @classmethod
+    def validate_currency(cls, v: str) -> str:
+        v_upper = v.upper()
+        if len(v_upper) != 3 or not v_upper.isalpha():
+            raise ValueError("El código de moneda debe ser 3 letras mayúsculas")
+        return v_upper
+
+    @field_validator('amount')
+    @classmethod
+    def validate_amount(cls, v: Optional[float]) -> Optional[float]:
+        if v is not None and v <= 0:
+            raise ValueError("La cantidad debe ser positiva")
+        return v
+
+
+def _calculate_momentum(data: Dict[str, Any]) -> Dict[str, float]:
+    """Calcula indicadores de momentum"""
+    return {
+        "rsi": min(100, max(0, 50 + data.get("daily_return_pct", 0) * 2)),
+        "fuerza_tendencia": abs(data.get("daily_return_pct", 0)) / (data.get("volatility_pct", 1) + 0.1)
+    }
+
+
+def _detect_trend(data: Dict[str, Any]) -> str:
+    """Detecta la tendencia del activo"""
+    if "current_price" not in data or "high_52w" not in data or "low_52w" not in data:
+        return "INDEFINIDA"
+
+    price = data["current_price"]
+    high = data["high_52w"]
+    low = data["low_52w"]
+
+    range_52w = high - low
+    position = (price - low) / range_52w if range_52w > 0 else 0
+
+    if position > 0.7:
+        return "ALCISTA_FUERTE"
+    elif position > 0.5:
+        return "ALCISTA"
+    elif position < 0.3:
+        return "BAJISTA_FUERTE"
+    elif position < 0.5:
+        return "BAJISTA"
+    return "LATERAL"
+
+
+def _find_support_resistance(data: Dict[str, Any]) -> Dict[str, float]:
+    """Identifica niveles de soporte y resistencia"""
+    current_price = data.get("current_price", 0)
+    high_52w = data.get("high_52w", current_price)
+    low_52w = data.get("low_52w", current_price)
+
+    return {
+        "soporte_1": round(low_52w + (high_52w - low_52w) * 0.236, 2),
+        "soporte_2": round(low_52w + (high_52w - low_52w) * 0.382, 2),
+        "resistencia_1": round(low_52w + (high_52w - low_52w) * 0.618, 2),
+        "resistencia_2": round(low_52w + (high_52w - low_52w) * 0.786, 2)
+    }
+
+
+def _analyze_volatility(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Analiza la volatilidad del activo"""
+    volatility = data.get("volatility_pct", 0)
+    return {
+        "volatilidad_anual": volatility,
+        "riesgo": "ALTO" if volatility > 30 else "MEDIO" if volatility > 15 else "BAJO",
+        "stop_loss_sugerido": round(data.get("current_price", 0) * (1 - volatility/100), 2)
+    }
+
+
+def _generate_recommendation(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Genera recomendación de trading basada en señales técnicas"""
+    trend = _detect_trend(data)
+    momentum = _calculate_momentum(data)
+    volatility = _analyze_volatility(data)
+
+    score = 0
+    score += 2 if trend in ["ALCISTA_FUERTE"] else 1 if trend == "ALCISTA" else -2 if trend == "BAJISTA_FUERTE" else -1 if trend == "BAJISTA" else 0
+    score += 1 if momentum["rsi"] > 60 else -1 if momentum["rsi"] < 40 else 0
+    score += 1 if momentum["fuerza_tendencia"] > 0.5 else -1 if momentum["fuerza_tendencia"] < -0.5 else 0
+
+    return {
+        "acción": "COMPRAR" if score >= 2 else "VENDER" if score <= -2 else "MANTENER",
+        "confianza": abs(score) / 4 * 100,  # Porcentaje de confianza
+        "stop_loss": volatility["stop_loss_sugerido"]
+    }
+
+
+def _calculate_trading_signals(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Calcula señales técnicas de trading"""
+    signals = {
+        "tendencia": _detect_trend(data),
+        "soportes_resistencias": _find_support_resistance(data),
+        "momentum": _calculate_momentum(data),
+        "volatilidad": _analyze_volatility(data),
+        "recomendación": _generate_recommendation(data)
+    }
+    return signals
+
 
 class FinancialAnalyst:
     """Cliente para análisis financiero con OpenAI"""
@@ -49,7 +149,7 @@ class FinancialAnalyst:
     async def analyze_financial_data(self, data: Dict[str, Any], query: str) -> str:
         """Analiza datos financieros usando OpenAI para recomendaciones de trading"""
 
-        signals = self._calculate_trading_signals(data)
+        signals = _calculate_trading_signals(data)
         
         # Preparar el prompt para análisis y recomendaciones
         prompt = f"""
@@ -80,20 +180,14 @@ class FinancialAnalyst:
         try:
             from openai import AsyncOpenAI
             
-            client = AsyncOpenAI(api_key=self.api_key)
+            client = AsyncOpenAI(api_key = self.api_key)
             response = await client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {
-                        "role": "system",
-                        "content": """Eres un analista técnico experto que proporciona recomendaciones 
+                    ChatCompletionSystemMessageParam(role="system", content="""Eres un analista técnico experto que proporciona recomendaciones 
                         de trading basadas exclusivamente en análisis cuantitativo y señales técnicas. 
-                        Tus recomendaciones son precisas y respaldadas por datos."""
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
+                        Tus recomendaciones son precisas y respaldadas por datos."""),
+                    ChatCompletionUserMessageParam(role="user", content=prompt)
                 ],
                 temperature=0.2,
                 max_tokens=2000
@@ -103,84 +197,6 @@ class FinancialAnalyst:
         except Exception as e:
             return f"Error en el análisis: {str(e)}"
 
-    def _calculate_trading_signals(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Calcula señales técnicas de trading"""
-        signals = {
-            "tendencia": self._detect_trend(data),
-            "soportes_resistencias": self._find_support_resistance(data),
-            "momentum": self._calculate_momentum(data),
-            "volatilidad": self._analyze_volatility(data),
-            "recomendacion": self._generate_recommendation(data)
-        }
-        return signals
-
-    def _detect_trend(self, data: Dict[str, Any]) -> str:
-        """Detecta la tendencia del activo"""
-        if "current_price" not in data or "high_52w" not in data or "low_52w" not in data:
-            return "INDEFINIDA"
-        
-        price = data["current_price"]
-        high = data["high_52w"]
-        low = data["low_52w"]
-        
-        range_52w = high - low
-        position = (price - low) / range_52w if range_52w > 0 else 0
-        
-        if position > 0.7:
-            return "ALCISTA_FUERTE"
-        elif position > 0.5:
-            return "ALCISTA"
-        elif position < 0.3:
-            return "BAJISTA_FUERTE"
-        elif position < 0.5:
-            return "BAJISTA"
-        return "LATERAL"
-
-    def _find_support_resistance(self, data: Dict[str, Any]) -> Dict[str, float]:
-        """Identifica niveles de soporte y resistencia"""
-        current_price = data.get("current_price", 0)
-        high_52w = data.get("high_52w", current_price)
-        low_52w = data.get("low_52w", current_price)
-        
-        return {
-            "soporte_1": round(low_52w + (high_52w - low_52w) * 0.236, 2),
-            "soporte_2": round(low_52w + (high_52w - low_52w) * 0.382, 2),
-            "resistencia_1": round(low_52w + (high_52w - low_52w) * 0.618, 2),
-            "resistencia_2": round(low_52w + (high_52w - low_52w) * 0.786, 2)
-        }
-
-    def _calculate_momentum(self, data: Dict[str, Any]) -> Dict[str, float]:
-        """Calcula indicadores de momentum"""
-        return {
-            "rsi": min(100, max(0, 50 + data.get("daily_return_pct", 0) * 2)),
-            "fuerza_tendencia": abs(data.get("daily_return_pct", 0)) / (data.get("volatility_pct", 1) + 0.1)
-        }
-
-    def _analyze_volatility(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analiza la volatilidad del activo"""
-        volatility = data.get("volatility_pct", 0)
-        return {
-            "volatilidad_anual": volatility,
-            "riesgo": "ALTO" if volatility > 30 else "MEDIO" if volatility > 15 else "BAJO",
-            "stop_loss_sugerido": round(data.get("current_price", 0) * (1 - volatility/100), 2)
-        }
-
-    def _generate_recommendation(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Genera recomendación de trading basada en señales técnicas"""
-        trend = self._detect_trend(data)
-        momentum = self._calculate_momentum(data)
-        volatility = self._analyze_volatility(data)
-        
-        score = 0
-        score += 2 if trend in ["ALCISTA_FUERTE"] else 1 if trend == "ALCISTA" else -2 if trend == "BAJISTA_FUERTE" else -1 if trend == "BAJISTA" else 0
-        score += 1 if momentum["rsi"] > 60 else -1 if momentum["rsi"] < 40 else 0
-        score += 1 if momentum["fuerza_tendencia"] > 0.5 else -1 if momentum["fuerza_tendencia"] < -0.5 else 0
-        
-        return {
-            "accion": "COMPRAR" if score >= 2 else "VENDER" if score <= -2 else "MANTENER",
-            "confianza": abs(score) / 4 * 100,  # Porcentaje de confianza
-            "stop_loss": volatility["stop_loss_sugerido"]
-        }
 
 class FinancialDataProvider:
     """Proveedor de datos financieros"""
@@ -406,7 +422,7 @@ def main():
     """Función principal para ejecutar el servidor MCP"""
     if not OPENAI_API_KEY:
         print("Error: OPENAI_API_KEY no está configurada en las variables de entorno")
-        print("Crea un archivo .env con: OPENAI_API_KEY=tu_api_key_aqui")
+        print("Crea un archivo .env con: OPENAI_API_KEY=tu_api_key_aquí")
         return
 
     print("🚀 Iniciando MCP Finance IA Server...")
